@@ -854,5 +854,382 @@ socket.on('inventory data',d=>renderInventory(d.gifts||{}));
 socket.on('error',msg=>toast(msg,'error'));
 socket.on('server stats',s=>$('chat-sub').textContent=`${s.usersOnline||0} онлайн · ${s.totalMessages||0} сообщений`);
 </script>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+/** * SAPHIR ENGINE 🌿 
+ * Логика мессенджера на localStorage
+ */
+
+// --- СОСТОЯНИЕ ПРИЛОЖЕНИЯ ---
+let state = {
+    users: JSON.parse(localStorage.getItem('sph_users')) || [],
+    messages: JSON.parse(localStorage.getItem('sph_msgs')) || [],
+    currentUser: null,
+    activeTab: 'pub', // 'pub' или 'prv'
+    selectedGift: null,
+    selectedShopItem: null,
+    isDark: localStorage.getItem('sph_theme') === 'dark'
+};
+
+const GIFTS = [
+    { id: 1, name: 'Клевер', em: '🍀', price: 10, rarity: 'c' },
+    { id: 2, name: 'Латте', em: '☕', price: 25, rarity: 'c' },
+    { id: 3, name: 'Кристалл', em: '💎', price: 100, rarity: 'r' },
+    { id: 4, name: 'Дракон', em: '🐉', price: 500, rarity: 'l' },
+    { id: 5, name: 'Корона', em: '👑', price: 1000, rarity: 'm' }
+];
+
+// --- ИНИЦИАЛИЗАЦИЯ ---
+document.addEventListener('DOMContentLoaded', () => {
+    if (state.isDark) document.body.setAttribute('data-dark', '');
+    updateThemeIcon();
+    
+    // Авто-вход если сессия жива
+    const saved = sessionStorage.getItem('sph_session');
+    if (saved) {
+        state.currentUser = state.users.find(u => u.name === saved);
+        if (state.currentUser) showApp();
+    }
+});
+
+// --- АВТОРИЗАЦИЯ ---
+function doLogin() {
+    const name = document.getElementById('inp-user').value.trim();
+    const pass = document.getElementById('inp-pass').value;
+    const msg = document.getElementById('auth-msg');
+
+    const user = state.users.find(u => u.name.toLowerCase() === name.toLowerCase() && u.pass === pass);
+    
+    if (user) {
+        if (user.isBanned) return showAuthMsg("Вы забанены", "error");
+        state.currentUser = user;
+        sessionStorage.setItem('sph_session', user.name);
+        showApp();
+    } else {
+        showAuthMsg("Неверное имя или пароль", "error");
+    }
+}
+
+function doRegister() {
+    const name = document.getElementById('inp-user').value.trim();
+    const pass = document.getElementById('inp-pass').value;
+    
+    if (name.length < 3) return showAuthMsg("Ник слишком короткий", "error");
+    if (pass.length < 4) return showAuthMsg("Пароль слишком простой", "error");
+    if (state.users.some(u => u.name.toLowerCase() === name.toLowerCase())) {
+        return showAuthMsg("Ник уже занят", "error");
+    }
+
+    const newUser = {
+        name, pass, 
+        lv: 1, xp: 0, coins: 100, 
+        bio: "Новичок в Saphir", 
+        badges: [], gifts: [], 
+        isAdmin: name.toLowerCase() === 'admin',
+        isBanned: false,
+        online: true,
+        joined: Date.now()
+    };
+
+    state.users.push(newUser);
+    saveData();
+    showAuthMsg("Регистрация успешна! Войдите.", "success");
+}
+
+function doLogout() {
+    sessionStorage.removeItem('sph_session');
+    location.reload();
+}
+
+// --- ИНТЕРФЕЙС ---
+function showApp() {
+    document.getElementById('login-screen').style.display = 'none';
+    document.getElementById('app').style.display = 'flex';
+    if (state.currentUser.isAdmin) document.getElementById('admin-btn').style.display = 'flex';
+    
+    updateSelfUI();
+    renderUsers();
+    renderMessages();
+    startHeartbeat();
+}
+
+function updateSelfUI() {
+    const u = state.currentUser;
+    document.getElementById('self-name').innerText = u.name;
+    document.getElementById('self-lv').innerText = `LVL ${u.lv}`;
+    document.getElementById('self-coins').innerText = u.coins;
+    document.getElementById('self-ava').innerText = u.name[0].toUpperCase();
+    
+    const xpNeeded = u.lv * 100;
+    const pct = (u.xp / xpNeeded) * 100;
+    document.getElementById('self-xp').style.width = pct + '%';
+    document.getElementById('self-xp-lbl').innerText = `${u.xp} / ${xpNeeded} XP`;
+}
+
+function renderUsers() {
+    const container = document.getElementById('users-list');
+    container.innerHTML = '';
+    
+    state.users.filter(u => !u.isBanned).forEach(u => {
+        const row = document.createElement('div');
+        row.className = 'u-row';
+        row.onclick = () => openUserProfile(u.name);
+        row.innerHTML = `
+            <div class="ava ava-30 bg-fern">${u.name[0].toUpperCase()}${u.online ? '<div class="dot"></div>' : ''}</div>
+            <div class="u-info">
+                <div class="u-name">${u.name} ${u.isAdmin ? '<i class="fas fa-shield-halved ms-1" style="font-size:10px;color:var(--fern)"></i>' : ''}</div>
+                <div class="u-sub">Уровень ${u.lv}</div>
+            </div>
+            <button class="pm-btn" onclick="event.stopPropagation(); startPm('${u.name}')">Чат</button>
+        `;
+        container.appendChild(row);
+    });
+    
+    document.getElementById('chat-sub').innerText = `${state.users.filter(u => u.online).length} в сети`;
+}
+
+// --- СООБЩЕНИЯ ---
+function sendMsg() {
+    const inp = document.getElementById('msg-inp');
+    const text = inp.value.trim();
+    if (!text) return;
+
+    const msg = {
+        id: Date.now(),
+        from: state.currentUser.name,
+        text: text,
+        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        type: 'text'
+    };
+
+    state.messages.push(msg);
+    addXP(5);
+    inp.value = '';
+    saveData();
+    renderMessages();
+}
+
+function renderMessages() {
+    const container = document.getElementById('messages');
+    container.innerHTML = '';
+    
+    state.messages.forEach(m => {
+        const isMe = m.from === state.currentUser.name;
+        const wrap = document.createElement('div');
+        wrap.className = `msg-wrap ${isMe ? 'sent' : 'recv'}`;
+        
+        wrap.innerHTML = `
+            <div class="msg-author"><span onclick="openUserProfile('${m.from}')">${m.from}</span></div>
+            <div class="msg-bubble">${m.text}</div>
+            <div class="msg-time">${m.time}</div>
+        `;
+        container.appendChild(wrap);
+    });
+    container.scrollTop = container.scrollHeight;
+}
+
+// --- СИСТЕМА УРОВНЕЙ ---
+function addXP(amt) {
+    state.currentUser.xp += amt;
+    const needed = state.currentUser.lv * 100;
+    if (state.currentUser.xp >= needed) {
+        state.currentUser.xp -= needed;
+        state.currentUser.lv++;
+        showToast(`Уровень повышен! Теперь вы ${state.currentUser.lv} LVL`, "info");
+    }
+    updateSelfUI();
+    saveData();
+}
+
+// --- МАГАЗИН И ПОДАРКИ ---
+function openGiftModal(targetName = null) {
+    const list = document.getElementById('gift-rcpt-list');
+    list.innerHTML = '';
+    
+    state.users.filter(u => u.name !== state.currentUser.name).forEach(u => {
+        const pill = document.createElement('div');
+        pill.className = `rcpt-pill ${u.name === targetName ? 'sel' : ''}`;
+        pill.dataset.name = u.name;
+        pill.innerHTML = `<div class="ava ava-30 bg-fern">${u.name[0]}</div> ${u.name}`;
+        pill.onclick = () => {
+            document.querySelectorAll('.rcpt-pill').forEach(p => p.classList.remove('sel'));
+            pill.classList.add('sel');
+            checkGiftReady();
+        };
+        list.appendChild(pill);
+    });
+
+    const selector = document.getElementById('gift-selector');
+    selector.innerHTML = '';
+    GIFTS.forEach(g => {
+        const card = document.createElement('div');
+        card.className = 'gift-card';
+        card.innerHTML = `
+            <span class="rarity-pip r-${g.rarity}">${g.rarity.toUpperCase()}</span>
+            <div class="em">${g.em}</div>
+            <div class="gname">${g.name}</div>
+            <div class="gprice">${g.price} <i class="fas fa-coins"></i></div>
+        `;
+        card.onclick = () => {
+            document.querySelectorAll('.gift-card').forEach(c => c.classList.remove('sel'));
+            card.classList.add('sel');
+            state.selectedGift = g;
+            checkGiftReady();
+        };
+        selector.appendChild(card);
+    });
+}
+
+function checkGiftReady() {
+    const rcpt = document.querySelector('.rcpt-pill.sel');
+    document.getElementById('gift-send-btn').disabled = !(rcpt && state.selectedGift);
+}
+
+function doSendGift() {
+    const rcptName = document.querySelector('.rcpt-pill.sel').dataset.name;
+    const gift = state.selectedGift;
+    
+    if (state.currentUser.coins < gift.price) {
+        return showToast("Недостаточно монет", "error");
+    }
+
+    state.currentUser.coins -= gift.price;
+    const target = state.users.find(u => u.name === rcptName);
+    target.gifts.push({ ...gift, from: state.currentUser.name, date: Date.now() });
+    
+    state.messages.push({
+        from: 'System',
+        text: `🎁 ${state.currentUser.name} подарил ${gift.em} (${gift.name}) пользователю ${rcptName}!`,
+        time: '',
+        type: 'sys'
+    });
+
+    bootstrap.Modal.getInstance(document.getElementById('giftModal')).hide();
+    showToast("Подарок отправлен!", "success");
+    addXP(20);
+    saveData();
+    renderMessages();
+}
+
+// --- УТИЛИТЫ ---
+function saveData() {
+    localStorage.setItem('sph_users', JSON.stringify(state.users));
+    localStorage.setItem('sph_msgs', JSON.stringify(state.messages));
+}
+
+function showAuthMsg(txt, type) {
+    const el = document.getElementById('auth-msg');
+    el.innerText = txt;
+    el.className = `auth-msg ${type}`;
+}
+
+function showToast(txt, type) {
+    const id = Date.now();
+    const html = `
+        <div id="t-${id}" class="s-toast ${type}">
+            <i class="fas fa-${type === 'error' ? 'circle-xmark' : 'circle-check'}"></i>
+            ${txt}
+        </div>
+    `;
+    document.getElementById('toasts').insertAdjacentHTML('beforeend', html);
+    setTimeout(() => document.getElementById(`t-${id}`)?.remove(), 3000);
+}
+
+function toggleTheme() {
+    state.isDark = !state.isDark;
+    if (state.isDark) {
+        document.body.setAttribute('data-dark', '');
+        localStorage.setItem('sph_theme', 'dark');
+    } else {
+        document.body.removeAttribute('data-dark');
+        localStorage.setItem('sph_theme', 'light');
+    }
+    updateThemeIcon();
+}
+
+function updateThemeIcon() {
+    const btn = document.getElementById('theme-btn');
+    if (btn) btn.innerHTML = state.isDark ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
+}
+
+function toggleSidebar() {
+    const sb = document.getElementById('sidebar');
+    const ov = document.getElementById('overlay');
+    sb.classList.toggle('open');
+    ov.classList.toggle('show');
+}
+
+function startHeartbeat() {
+    setInterval(() => {
+        // Симуляция онлайна
+        renderUsers();
+    }, 10000);
+}
+
+// --- ФУНКЦИИ ПРОФИЛЯ ---
+function openUserProfile(name) {
+    const u = state.users.find(user => user.name === name);
+    if (!u) return;
+    
+    document.getElementById('pm-name').innerText = u.name;
+    document.getElementById('pm-ava').innerText = u.name[0].toUpperCase();
+    document.getElementById('pm-ava').className = `ava ava-72 bg-fern`;
+    document.getElementById('pm-lv').innerText = `LVL ${u.lv}`;
+    document.getElementById('pm-msgs').innerText = state.messages.filter(m => m.from === u.name).length;
+    document.getElementById('pm-xp').innerText = u.xp;
+    document.getElementById('pm-gr').innerText = u.gifts.length;
+    document.getElementById('bio-text').innerText = u.bio || "Нет описания";
+    
+    // Показ бейджей
+    const badgesCont = document.getElementById('pm-badges');
+    badgesCont.innerHTML = '';
+    if (u.isAdmin) badgesCont.innerHTML += `<span class="tag-badge bg-mod">ADMIN</span>`;
+    u.badges.forEach(b => {
+        badgesCont.innerHTML += `<span class="tag-badge bg-${b}">${b.toUpperCase()}</span>`;
+    });
+    
+    const modal = new bootstrap.Modal(document.getElementById('profileModal'));
+    modal.show();
+}
+
+function openOwnProfile() {
+    openUserProfile(state.currentUser.name);
+    document.getElementById('bio-edit-btn').style.display = 'block';
+}
+
+function toggleBioEdit() {
+    const isEdit = document.getElementById('bio-area').style.display === 'block';
+    document.getElementById('bio-area').style.display = isEdit ? 'none' : 'block';
+    document.getElementById('bio-text').style.display = isEdit ? 'block' : 'none';
+    document.getElementById('bio-save-row').style.display = isEdit ? 'none' : 'block';
+    if (!isEdit) document.getElementById('bio-area').value = state.currentUser.bio;
+}
+
+function saveBio() {
+    state.currentUser.bio = document.getElementById('bio-area').value;
+    saveData();
+    toggleBioEdit();
+    document.getElementById('bio-text').innerText = state.currentUser.bio;
+    showToast("Профиль обновлен", "success");
+}
+
+// --- АДМИН-ПАНЕЛЬ ---
+function openAdmin() {
+    document.getElementById('adm-total').innerText = state.users.length;
+    document.getElementById('adm-online').innerText = state.users.filter(u => u.online).length;
+    document.getElementById('adm-msgs').innerText = state.messages.length;
+}
+
+function giveCoins() {
+    const name = document.getElementById('adm-u1').value;
+    const amt = parseInt(document.getElementById('adm-coins').value);
+    const u = state.users.find(user => user.name === name);
+    if (u) {
+        u.coins += amt;
+        saveData();
+        showToast(`Выдано ${amt} монет`, "success");
+    }
+}
+</script>
 </body>
 </html>
