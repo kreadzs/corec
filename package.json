@@ -1,2 +1,14 @@
-npm init -y
-npm install express socket.io geoip-lite
+{
+  "name": "core-chat",
+  "version": "1.0.0",
+  "description": "Node.js chat with socket.io",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.7.2",
+    "geoip-lite": "^1.4.7"
+  }
+}
